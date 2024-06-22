@@ -3,9 +3,9 @@ import pandas as pd
 from pathlib import Path
 import cvxpy as cp
 from max_flow import Edge, Node
-from itertools import combinations
+from itertools import permutations
 from tqdm import tqdm
-import pickle
+import altair as alt
 
 pd.options.mode.copy_on_write = True
 
@@ -47,7 +47,7 @@ for b in atcs.columns:
     if b_other_dir not in all_borders:
         all_borders += [b]
 all_bidding_zones = set([bz for b in all_borders for bz in b.split('-')])
-all_bz_pairs = set(combinations(all_bidding_zones,2))
+all_bz_pairs = set(permutations(all_bidding_zones,2))
 
 #%% Solve the max-flow problem for each mtu and combination of bidding zones
 # Construct the edges and solve problem for each mtu
@@ -115,5 +115,13 @@ edge_results = pd.DataFrame.from_dict(edge_results,orient='index').rename_axis([
 edge_cap_file = 'Hub-to-hub_cb_flows.csv'
 edge_results.reset_index().to_csv(result_folder / edge_cap_file,index=False)
 
+# %% Plot
+data = h2h_caps.reset_index()
+data['BZ pair'] = data['Source'].astype(str) + '>' + data['Sink']
+to_plot = data.groupby('BZ pair').get_group('SE2>SE3')
+alt.Chart(to_plot).mark_line().encode(
+    x='MTU:T',
+    y='H2H capacity:Q'
+)
 
 # %%
