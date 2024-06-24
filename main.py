@@ -69,6 +69,7 @@ if not result_exists:
     # We set a weight for the maxflow in objective function
     # This weight must make it beneficial to increase the max flow
     # compared to increasing the sum of flows induced by this max flow
+    # The objective function is maximize (weight*flow into sink node - sums of edge flows in the graph)
     weight_max_flow = 2*nb_bz 
 
     with tqdm(total=nb_iter) as pbar:
@@ -83,25 +84,19 @@ if not result_exists:
                     from_bz,to_bz = b.split('-')
                     new_edge = Edge(atc_b,nodes[from_bz],nodes[to_bz])
                     edges[b] = new_edge
-                # Set the source and sink bidding zone
+                # Set flows sent from the source and received in the sink as optimisation variables
                 nodes[source].accumulation = cp.Variable()
                 nodes[sink].accumulation = cp.Variable()
                 # Build constraints
                 constraints = []
                 for o in list(nodes.values()) + list(edges.values()):
                     constraints += o.constraints()
-                # Objective function: maximize trade to sink from source
+                # Objective function: maximize trade to sink from source while minimizing the flows induced in the graph
+                # The second part (minimizing the flows induced in the graph) is used to avoid cycles in the optimal solution. It is not needed if we are only interested in the max flow value, i.e. in the hub-to-hub capacity. It is needed if we want to understand what realistic flows contribute to the maximum flow.
                 flowcost = [e.flow for e in edges.values()]
                 p = cp.Problem(cp.Maximize(weight_max_flow*nodes[sink].accumulation - cp.sum(flowcost)), constraints)
                 # Solve
-                # print(f'solve max-flow problem for mtu {mtu} from {source} to {sink}')
                 results = p.solve(solver='CLARABEL')
-                # print('Results:')
-                # print(f'Trading capacity between {source} and {sink}: {results} MWh')
-                # print(f'Corresponding trading flows on borders:')
-                # for e in edges.values():
-                #     if e.flow.value != 0:
-                #         print(e)
                 all_results[(mtu,source,sink)] = {
                     'Max trading capacity': nodes[sink].accumulation.value,
                     'Cross-border trading flows': edges

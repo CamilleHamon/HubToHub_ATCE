@@ -56,31 +56,3 @@ class Node:
     # Returns the node's internal constraints.
     def constraints(self):
         return [cp.sum([f for f in self.edge_flows]) == self.accumulation]
-
-
-if __name__ == "__main__":
-    # Read a graph from a file.
-    f = open(FILE, 'rb')
-    data = pickle.load(f)
-    f.close()
-
-    # Construct nodes.
-    node_count = data[NODE_COUNT_KEY]
-    nodes = [Node() for i in range(node_count)]
-    # Add source.
-    nodes[0].accumulation = cp.Variable()
-    # Add sink.
-    nodes[-1].accumulation = cp.Variable()
-
-    # Construct edges.
-    edges = []
-    for n1, n2, capacity in data[EDGES_KEY]:
-        edges.append(Edge(capacity))
-        edges[-1].connect(nodes[n1], nodes[n2])
-    # Construct the problem.
-    constraints = []
-    for o in nodes + edges:
-        constraints += o.constraints()
-    p = cp.Problem(cp.Maximize(nodes[-1].accumulation), constraints)
-    result = p.solve()
-    print(result)
