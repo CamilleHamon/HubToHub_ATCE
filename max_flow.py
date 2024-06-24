@@ -25,10 +25,9 @@ import cvxpy as cp
 class Edge:
     """ An undirected, capacity limited edge. """
 
-    def __init__(self, capacity_forward,capacity_reverse, from_node, to_node) -> None:
-        self.capacity_forward = capacity_forward
-        self.capacity_reverse = capacity_reverse
-        self.flow = cp.Variable()
+    def __init__(self, capacity, from_node, to_node) -> None:
+        self.capacity = capacity
+        self.flow = cp.Variable(nonneg=True)
         self.from_node = from_node.name
         self.to_node = to_node.name
         self.connect(from_node,to_node)
@@ -40,11 +39,10 @@ class Edge:
 
     # Returns the edge's internal constraints.
     def constraints(self):
-        return [self.flow <= self.capacity_forward,
-                self.flow >= self.capacity_reverse]
+        return [self.flow <= self.capacity]
     
     def __str__(self) -> str:
-        return f'Flow from {self.from_node} to {self.to_node}: capacity {self.capacity_reverse} <= {self.flow.value} <= capacity {self.capacity_forward}'
+        return f'Flow from {self.from_node} to {self.to_node}: {self.flow.value} <= capacity {self.capacity}'
 
 
 class Node:

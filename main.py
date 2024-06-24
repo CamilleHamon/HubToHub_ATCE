@@ -65,6 +65,11 @@ if not result_exists:
     nb_mtu = atcs.shape[0]
     nb_bz_pairs = len(all_bz_pairs)
     nb_iter = nb_mtu*nb_bz_pairs
+    nb_bz = len(all_bidding_zones)
+    # We set a weight for the maxflow in objective function
+    # This weight must make it beneficial to increase the max flow
+    # compared to increasing the sum of flows induced by this max flow
+    weight_max_flow = 2*nb_bz 
 
     with tqdm(total=nb_iter) as pbar:
         all_results = {}
@@ -76,14 +81,8 @@ if not result_exists:
                 edges = {}
                 for b, atc_b in act_mtu.items():
                     from_bz,to_bz = b.split('-')
-                    # We add an edge only if the other direction doesn't already exist
-                    # since edges are bi-directional
-                    b_other_dir = f'{to_bz}-{from_bz}'
-                    if b_other_dir not in list(edges.keys()):
-                        capacity_forward = atc_b
-                        capacity_reverse = -act_mtu[b_other_dir]
-                        new_edge = Edge(capacity_forward,capacity_reverse,nodes[from_bz],nodes[to_bz])
-                        edges[b] = new_edge
+                    new_edge = Edge(atc_b,nodes[from_bz],nodes[to_bz])
+                    edges[b] = new_edge
                 # Set the source and sink bidding zone
                 nodes[source].accumulation = cp.Variable()
                 nodes[sink].accumulation = cp.Variable()
@@ -92,7 +91,8 @@ if not result_exists:
                 for o in list(nodes.values()) + list(edges.values()):
                     constraints += o.constraints()
                 # Objective function: maximize trade to sink from source
-                p = cp.Problem(cp.Maximize(nodes[sink].accumulation), constraints)
+                flowcost = [e.flow for e in edges.values()]
+                p = cp.Problem(cp.Maximize(weight_max_flow*nodes[sink].accumulation - cp.sum(flowcost)), constraints)
                 # Solve
                 # print(f'solve max-flow problem for mtu {mtu} from {source} to {sink}')
                 results = p.solve(solver='CLARABEL')
@@ -103,7 +103,7 @@ if not result_exists:
                 #     if e.flow.value != 0:
                 #         print(e)
                 all_results[(mtu,source,sink)] = {
-                    'Max trading capacity': results,
+                    'Max trading capacity': nodes[sink].accumulation.value,
                     'Cross-border trading flows': edges
                 }
                 pbar.update()
@@ -116,20 +116,21 @@ if not result_exists:
 else:
     h2h_caps = pd.read_csv(result_folder / h2h_caps_file)
 # %% Save cross-border flows in csv
-# edge_results = {}
-# for k,v in all_results.items():
-#     for e in v['Cross-border trading flows'].values():
-#         if abs(e.flow.value) > 1e-5:
-#             key = k + (e.from_node,e.to_node)
-#             edge_results[key] = {'Flow': e.flow.value}
-# edge_results = pd.DataFrame.from_dict(edge_results,orient='index').rename_axis(['MTU','Source','Sink','From','To'])
-# edge_cap_file = 'Hub-to-hub_cb_flows.csv'
-# edge_results.reset_index().to_csv(result_folder / edge_cap_file,index=False)
+edge_results = {}
+for k,v in all_results.items():
+    for e in v['Cross-border trading flows'].values():
+        if abs(e.flow.value) > 1e-2:
+            key = k + (e.from_node,e.to_node)
+            edge_results[key] = {'Flow': e.flow.value,
+                                 'Capacity': e.capacity}
+edge_results = pd.DataFrame.from_dict(edge_results,orient='index').rename_axis(['MTU','Source','Sink','From','To'])
+edge_cap_file = 'Hub-to-hub_cb_flows.csv'
+edge_results.reset_index().to_csv(result_folder / edge_cap_file,index=False)
 
 # %% Plot
 data = h2h_caps.reset_index()
 data['BZ pair'] = data['Source'].astype(str) + '>' + data['Sink']
-to_plot = data.groupby('BZ pair').get_group('SE2>SE3')
+to_plot = data.groupby('BZ pair').get_group('SE3>SE2')
 alt.Chart(to_plot).mark_line().encode(
     x='MTU:T',
     y='H2H capacity:Q'
