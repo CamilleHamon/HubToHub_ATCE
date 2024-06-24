@@ -135,5 +135,4 @@ alt.Chart(to_plot).mark_line().encode(
     x='MTU:T',
     y='H2H capacity:Q'
 )
-
 # %%
