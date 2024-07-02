@@ -6,126 +6,147 @@ from max_flow import Edge, Node
 from itertools import permutations
 from tqdm import tqdm
 import altair as alt
+import pickle
 
 pd.options.mode.copy_on_write = True
 
 data_folder = Path('Data')
 week_folder = '2024w20_public/'
 week_folder = data_folder / week_folder
-result_folder = Path('Results') / week_folder.name
-result_folder.mkdir(parents=True, exist_ok=True)
-h2h_caps_file = 'Hub-to-hub_ID_capacities.csv'
-if (result_folder / h2h_caps_file).is_file():
-    result_exists = True
-else:
-    result_exists = False
 
-#%%
-if not result_exists:
-    csv_files = week_folder.glob('*.csv')
-    all_weekly_res = []
-    for f in csv_files:
-        data = pd.read_csv(f,header=[0,1])
-        data[('MTU','MTU')] = pd.to_datetime(data[('MTU','MTU')])
-        data = data.set_index(('MTU','MTU'))
-        data.index.name = 'MTU'
-        data = data.drop(('Backup','Backup'),axis=1)
-        data.columns.names = ['Border','Quantity']
-        # drop unnamed columns
-        cols_to_remove = []
-        for c in data.columns:
-            if ('Unnamed' in c[0]) or ('Unnamed' in c[1]):
-                cols_to_remove.append(c)
-        data = data.drop(cols_to_remove,axis=1)
-        all_weekly_res.append(data)
-    atcs = pd.concat(all_weekly_res).sort_index().swaplevel(axis=1)['ATC']
+def get_h2h_data(week_folder):
+    pickled_res_fil = 'h2h_data.pickle'
+    if (week_folder / pickled_res_fil).is_file():
+        result_exists = True
+    else:
+        result_exists = False
 
-    #  remove NO2A, SE3A, SE3_AC, SE4_AC, SE3_SWL, SE4_SWL
-    bzs_to_remove = ['NO2A', 'SE3A', 'SE3_AC', 'SE4_AC', 'SE3_SWL', 'SE4_SWL']
-    borders_to_remove = []
-    for c in atcs.columns:
-        if any([bz in c for bz in bzs_to_remove]):
-            borders_to_remove.append(c)
-    atcs = atcs.drop(borders_to_remove,axis=1)
+    #%%
+    if not result_exists:
+        csv_files = week_folder.glob('*.csv')
+        all_weekly_res = []
+        for f in csv_files:
+            data = pd.read_csv(f,header=[0,1])
+            data[('MTU','MTU')] = pd.to_datetime(data[('MTU','MTU')])
+            data = data.set_index(('MTU','MTU'))
+            data.index.name = 'MTU'
+            data = data.drop(('Backup','Backup'),axis=1)
+            data.columns.names = ['Border','Quantity']
+            # drop unnamed columns
+            cols_to_remove = []
+            for c in data.columns:
+                if ('Unnamed' in c[0]) or ('Unnamed' in c[1]):
+                    cols_to_remove.append(c)
+            data = data.drop(cols_to_remove,axis=1)
+            all_weekly_res.append(data)
+        atcs = pd.concat(all_weekly_res).sort_index().swaplevel(axis=1)['ATC']
 
-    # Extract list of borders and bidding zones
-    all_borders = []
-    for b in atcs.columns:
-        from_bz, to_bz = b.split('-')
-        # Check if we encountered the border in the other direction
-        b_other_dir = f'{to_bz}-{from_bz}'
-        if b_other_dir not in all_borders:
-            all_borders += [b]
-    all_bidding_zones = set([bz for b in all_borders for bz in b.split('-')])
-    all_bz_pairs = set(permutations(all_bidding_zones,2))
+        #  remove NO2A, SE3A, SE3_AC, SE4_AC, SE3_SWL, SE4_SWL
+        bzs_to_remove = ['NO2A', 'SE3A', 'SE3_AC', 'SE4_AC', 'SE3_SWL', 'SE4_SWL']
+        borders_to_remove = []
+        for c in atcs.columns:
+            if any([bz in c for bz in bzs_to_remove]):
+                borders_to_remove.append(c)
+        atcs = atcs.drop(borders_to_remove,axis=1)
 
-#%% Solve the max-flow problem for each mtu and combination of bidding zones
-# Construct the edges and solve problem for each mtu
-if not result_exists:
-    nb_mtu = atcs.shape[0]
-    nb_bz_pairs = len(all_bz_pairs)
-    nb_iter = nb_mtu*nb_bz_pairs
-    nb_bz = len(all_bidding_zones)
-    # We set a weight for the maxflow in objective function
-    # This weight must make it beneficial to increase the max flow
-    # compared to increasing the sum of flows induced by this max flow
-    # The objective function is maximize (weight*flow into sink node - sums of edge flows in the graph)
-    weight_max_flow = 2*nb_bz 
+        # Extract list of borders and bidding zones
+        all_borders = []
+        for b in atcs.columns:
+            from_bz, to_bz = b.split('-')
+            # Check if we encountered the border in the other direction
+            b_other_dir = f'{to_bz}-{from_bz}'
+            if b_other_dir not in all_borders:
+                all_borders += [b]
+        all_bidding_zones = set([bz for b in all_borders for bz in b.split('-')])
+        all_bz_pairs = set(permutations(all_bidding_zones,2))
 
-    with tqdm(total=nb_iter) as pbar:
-        all_results = {}
-        for mtu, act_mtu in atcs.iterrows():
-            # Solve max-flow problem for each bidding zone pair
-            for source,sink in all_bz_pairs:
-                pbar.set_description(f'MTU:{mtu}, bidding zone pair: {source}>{sink}')
-                nodes = {bz: Node(name=bz) for bz in all_bidding_zones} 
-                edges = {}
-                for b, atc_b in act_mtu.items():
-                    from_bz,to_bz = b.split('-')
-                    new_edge = Edge(atc_b,nodes[from_bz],nodes[to_bz])
-                    edges[b] = new_edge
-                # Set flows sent from the source and received in the sink as optimisation variables
-                nodes[source].accumulation = cp.Variable()
-                nodes[sink].accumulation = cp.Variable()
-                # Build constraints
-                constraints = []
-                for o in list(nodes.values()) + list(edges.values()):
-                    constraints += o.constraints()
-                # Objective function: maximize trade to sink from source while minimizing the flows induced in the graph
-                # The second part (minimizing the flows induced in the graph) is used to avoid cycles in the optimal solution. It is not needed if we are only interested in the max flow value, i.e. in the hub-to-hub capacity. It is needed if we want to understand what realistic flows contribute to the maximum flow.
-                flowcost = [e.flow for e in edges.values()]
-                p = cp.Problem(cp.Maximize(weight_max_flow*nodes[sink].accumulation - cp.sum(flowcost)), constraints)
-                # Solve
-                results = p.solve(solver='CLARABEL')
-                all_results[(mtu,source,sink)] = {
-                    'Max trading capacity': nodes[sink].accumulation.value,
-                    'Cross-border trading flows': edges
-                }
-                pbar.update()
+        # Solve the max-flow problem for each mtu and combination of bidding zones
+        # Construct the edges and solve problem for each mtu
+        nb_mtu = atcs.shape[0]
+        nb_bz_pairs = len(all_bz_pairs)
+        nb_iter = nb_mtu*nb_bz_pairs
+        nb_bz = len(all_bidding_zones)
+        # We set a weight for the maxflow in objective function
+        # This weight must make it beneficial to increase the max flow
+        # compared to increasing the sum of flows induced by this max flow
+        # The objective function is maximize (weight*flow into sink node - sums of edge flows in the graph)
+        weight_max_flow = 2*nb_bz 
 
-#%% Save hub-to-hub capacities in csv
-if not result_exists:
-    h2h_caps = {k: {'H2H capacity': v['Max trading capacity']} for k,v in all_results.items()}
-    h2h_caps = pd.DataFrame.from_dict(h2h_caps,orient='index').rename_axis(['MTU','Source','Sink'])
-    h2h_caps.reset_index().to_csv(result_folder / h2h_caps_file,index=False)
-else:
-    h2h_caps = pd.read_csv(result_folder / h2h_caps_file)
-# %% Save cross-border flows in csv
-edge_results = {}
-for k,v in all_results.items():
-    for e in v['Cross-border trading flows'].values():
-        if abs(e.flow.value) > 1e-2:
-            key = k + (e.from_node,e.to_node)
-            edge_results[key] = {'Flow': e.flow.value,
-                                 'Capacity': e.capacity}
-edge_results = pd.DataFrame.from_dict(edge_results,orient='index').rename_axis(['MTU','Source','Sink','From','To'])
-edge_cap_file = 'Hub-to-hub_cb_flows.csv'
-edge_results.reset_index().to_csv(result_folder / edge_cap_file,index=False)
+        with tqdm(total=nb_iter) as pbar:
+            all_results = {}
+            for mtu, act_mtu in atcs.iterrows():
+                # Solve max-flow problem for each bidding zone pair
+                for source,sink in all_bz_pairs:
+                    pbar.set_description(f'MTU:{mtu}, bidding zone pair: {source}>{sink}')
+                    nodes = {bz: Node(name=bz) for bz in all_bidding_zones} 
+                    edges = {}
+                    for b, atc_b in act_mtu.items():
+                        from_bz,to_bz = b.split('-')
+                        new_edge = Edge(atc_b,nodes[from_bz],nodes[to_bz])
+                        edges[b] = new_edge
+                    # Set flows sent from the source and received in the sink as optimisation variables
+                    nodes[source].accumulation = cp.Variable()
+                    nodes[sink].accumulation = cp.Variable()
+                    # Build constraints
+                    constraints = []
+                    for o in list(nodes.values()) + list(edges.values()):
+                        constraints += o.constraints()
+                    # Objective function: maximize trade to sink from source while minimizing the flows induced in the graph
+                    # The second part (minimizing the flows induced in the graph) is used to avoid cycles in the optimal solution. It is not needed if we are only interested in the max flow value, i.e. in the hub-to-hub capacity. It is needed if we want to understand what realistic flows contribute to the maximum flow.
+                    flowcost = [e.flow for e in edges.values()]
+                    p = cp.Problem(cp.Maximize(weight_max_flow*nodes[sink].accumulation - cp.sum(flowcost)), constraints)
+                    # Solve
+                    results = p.solve(solver='CLARABEL')
+                    all_results[(mtu,source,sink)] = {
+                        'Max trading capacity': nodes[sink].accumulation.value,
+                        'Cross-border trading flows': edges
+                    }
+                    pbar.update()
+
+        # Save hub-to-hub capacities in csv
+        h2h_caps = {k: {'H2H capacity': v['Max trading capacity']} for k,v in all_results.items()}
+        h2h_caps = pd.DataFrame.from_dict(h2h_caps,orient='index').rename_axis(['MTU','Source','Sink'])
+        
+
+        # Save cross-border flows in csv
+        edge_results = {}
+        for k,v in all_results.items():
+            for e in v['Cross-border trading flows'].values():
+                if abs(e.flow.value) > 1e-2:
+                    key = k + (e.from_node,e.to_node)
+                    edge_results[key] = {'Flow': e.flow.value,
+                                        'Capacity': e.capacity}
+        edge_results = pd.DataFrame.from_dict(edge_results,orient='index').rename_axis(['MTU','Source','Sink','From','To'])
+        edge_cap_file = 'Hub-to-hub_cb_flows.csv'
+        
+
+        # Pickle everything
+        results_to_pickle = {
+            'H2H capacities': h2h_caps,
+            'Trading flows': edge_results
+        }
+        with open(week_folder / pickled_res_fil, 'wb') as f:
+            # Pickle the 'data' dictionary using the highest protocol available.
+            pickle.dump(results_to_pickle, f, pickle.HIGHEST_PROTOCOL)
+    else:
+        with open(week_folder / pickled_res_fil, 'wb') as f:
+            # Pickle the 'data' dictionary using the highest protocol available.
+            results_to_pickle = pickle.load(f)
+    return results_to_pickle
+
+def write_to_csv(week_folder):
+    results = get_h2h_data(week_folder)
+    h2h_caps = results['H2H capacities']
+    edge_results = results['Trading flows']
+    h2h_caps_file = 'Hub-to-hub_ID_capacities.csv'
+    edge_cap_file = 'Hub-to-hub_cb_flows.csv'
+    h2h_caps.reset_index().to_csv(week_folder / h2h_caps_file,index=False)
+    edge_results.reset_index().to_csv(week_folder / edge_cap_file,index=False)
 
 # %% Plot
 data = h2h_caps.reset_index()
 data['BZ pair'] = data['Source'].astype(str) + '>' + data['Sink']
-to_plot = data.groupby('BZ pair').get_group('SE3>SE2')
+to_plot = data.groupby('BZ pair').get_group('NO1>SE3')
 alt.Chart(to_plot).mark_line().encode(
     x='MTU:T',
     y='H2H capacity:Q'
